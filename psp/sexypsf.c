@@ -1,7 +1,7 @@
 // ===========================================================================
 //
 // sexypsf for PSP
-// Copyright (C) 2005 Weltall
+// Copyright (C) 2005 Weltall (weltall@consoleworld.org)(www.consoleworld.org)
 // Copyright (C) 2005 Sumire Kinoshita
 //
 // 0.4.5-r1 (13/7/2005)
@@ -38,7 +38,11 @@
 // モジュール名   : sexypsf
 // モジュール属性 : 無し
 // バージョン     : 0.1
-PSP_MODULE_INFO("sexypsf", 0x1000, 0, 1);
+#ifndef BUILD20
+PSP_MODULE_INFO("sexypsf", 0x1000, 1, 1);
+#else
+PSP_MODULE_INFO("sexypsf", 0x0, 1, 1);
+#endif
 
 // スレッド属性 : ユーザーモード / VFPU アクセス有効
 PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU);
@@ -81,6 +85,7 @@ static u8 sound_read_index;                        // サウンドバッファの読み込み
 static u32 sound_read_offset;                      // サウンドバッファの読み込みオフセット。
 static u8 sound_write_index;                       // サウンドバッファの書き込みインデックス。
 static u32 sound_write_offset;                     // サウンドバッファの書き込みオフセット。
+int audio_handle; // オーディオチャンネルのハンドル。
 
 static int current_scene;      // 現在のシーン。
 static int filer_scene_index;  // ファイル選択画面の表示インデックス。
@@ -96,13 +101,26 @@ static int current_dirents_count;              // 現在のディレクトリのファイル数
 u8 enable_reverb; // リバーブの有効 / 無効フラグ。../spu/spu.c より参照される。
 int thread_paused = 0; //tells if the play and sexypsf thread are suspended
 int enable_shuffle = 0; //suffle is enabled if 1
+int enable_timelimit = 1;
+int enable_fade = 0;
 /*used to count play time*/
 u64 start_cputicks = 0;
 u64 current_tick = 0;
+//current time
 int seconds = 0;
 int minutes = 0;
 int hours = 0;
+//song defined time
+int secondstot = 0;
+int minutestot = 0;
+int hourstot = 0;
+//fade info
+u64 fade_start_ticks = 0;
+u64 fade_ticks = 0;
+int into_fade = 0;
+int fade_res = 0;
 
+#ifndef BUILD20
 __attribute__ ((constructor))
 void loaderInit()
 {
@@ -111,6 +129,7 @@ void loaderInit()
 	pspDebugInstallErrorHandler(NULL);
     //pspDebugInstallKprintfHandler(NULL);
 }
+#endif
 // ===========================================================================
 //
 // 関数の定義。
@@ -129,13 +148,28 @@ void loaderInit()
 // 戻り値 :
 //   常に 0。
 // ---------------------------------------------------------------------------
+/*void	volume_boost_2( short* audio_data, int length )
+{
+	register int	l = length / 2;
+	register short*	d = audio_data;
+
+	while (l--)
+	{
+		register int	val = *d * 2;
+		if (val > 32767)
+			val = 32767;
+		else if (val < 32768)
+			val = -32768;
+		*d++ = (short)val;
+	}
+}*/
 static int audio_thread(SceSize args, void *argp)
 {
-	int audio_handle; // オーディオチャンネルのハンドル。
 	
 	// オーディオチャンネルの取得。
 	audio_handle = sceAudioChReserve(
 		PSP_AUDIO_NEXT_CHANNEL, SAMPLE_COUNT, PSP_AUDIO_FORMAT_STEREO);
+	sceAudioChangeChannelVolume(audio_handle, PSP_AUDIO_VOLUME_MAX, PSP_AUDIO_VOLUME_MAX);
 	// スレッドの終了フラグが立つまでループ。
 	while(!audio_thread_exit_flag)
 	{
@@ -146,7 +180,6 @@ static int audio_thread(SceSize args, void *argp)
 		if(!sound_buffer_ready[sound_read_index]) {
 			continue;
 		}
-		
 		// 対象サウンドバッファから 1 ブロック分出力する。
 		sceAudioOutputPannedBlocking(
 			audio_handle, PSP_AUDIO_VOLUME_MAX, PSP_AUDIO_VOLUME_MAX,
@@ -250,6 +283,7 @@ void sexyd_update(u8 *buffer, int length)
 next:;
 	} while(sound_buffer_ready[sound_write_index]);
 	
+
 	// 対象バッファの残りサイズを計算する。
 	buffer_free_length = BUFFER_SIZE - sound_write_offset;
 	
@@ -263,12 +297,14 @@ next:;
 	} else {
 		// 対象バッファの残りサイズ分だけサンプルを書き込む。
 		memcpy(&sound_buffer[sound_write_index][sound_write_offset], buffer, buffer_free_length);
+
 		
 		// 書き込んだ分だけサンプルのバッファポインタとサイズを調整する。
 		buffer += buffer_free_length;
 		length -= buffer_free_length;
 		
 		// 次のサウンドバッファを参照するように切り替える。
+		
 		sound_buffer_ready[sound_write_index] = 1;
 		sound_write_index++;
 		sound_write_offset = 0;
@@ -304,7 +340,30 @@ static int psf_play()
 	seconds = 0;
 	minutes = 0;
 	hours = 0;
+	secondstot = 0;
+	minutestot = 0;
+	hourstot = 0;
 	psf_info = sexy_load(current_psf_path);
+	u32 temp = psf_info->stop/10;
+	while(temp>=100)
+	{
+		secondstot += 1;
+		temp -= 100;
+		while(secondstot >= 60)
+		{
+			minutestot +=1;
+			secondstot -= 60;
+			while(minutestot >= 60)
+			{
+				hourstot += 1;
+				minutestot -= 60;
+			}
+		}
+	}
+
+	
+		
+
 
 
 	// PSFINFO 構造体は有効か？
@@ -570,16 +629,18 @@ static void play_draw()
 	printf_line( 7, "PSF by    : %s", psf_info->psfby     ? psf_info->psfby     : "");
 	printf_line( 8, "Copyright : %s", psf_info->copyright ? psf_info->copyright : "");
 	
-	for(i = 9; i < 31; i++)
+	for(i = 9; i < 30; i++)
 	{
 		// 空白行を表示。
 		printf_line(i, "");
 	}
-	printf_line(31, "%3d:%2d:%2d",hours,minutes,seconds);
+	//printf_line(31, "%3d:%2d:%2d - %dms -f: %dms",hourstot,minutestot,secondstot,psf_info->length, psf_info->fade);
+	printf_line(30, "%3d:%2d:%2d",hours,minutes,seconds);
+	printf_line(31,"%3d:%2d:%2d",hourstot,minutestot,secondstot);
 	printf_line(32, "===================================================================");
-	printf_line(33, "Cross = Stop / Triangle = Toggle reverb                       |%s|%s|",
+	printf_line(33, "Cross = Stop / Triangle = Toggle reverb                     |%s|%s|%s|",
 		// リバーブが有効かどうか示すインジケータ。
-		enable_shuffle ? "S" : " ",enable_reverb ? "R" : " "
+		enable_timelimit ? "T" : " ",enable_shuffle ? "S" : " ",enable_reverb ? "R" : " "
 	);
 }
 
@@ -697,8 +758,31 @@ static void filer_scene(int buttons)
 		enable_reverb ^= 1;
 		// 画面を更新する。
 		filer_draw();
+	} else if(buttons & PSP_CTRL_SQUARE) {
+		int i;
+		printf_line(0,"sexypsf 0.4.5-r1 PSP 1.1d\n");
+		printf_line(1, "===================================================================");
+		for(i = 2; i<11; i++)
+		{
+			printf_line(i,"");
+		}
+		printf_line(11,"                Coded by weltall  (weltall@consoleworld.org)\n");
+        printf_line(12,"     Coded and ported by yaneurao\n");
+		printf_line(13,"                  gfx by c0d3x\n");
+		printf_line(14,"");
+		printf_line(15,"               thanks to pspdev community!\n");
+		for(i = 16; i < 25; i++)
+		{
+			printf_line(i, "");
+		}
+		printf_line(25,"                         www.consoleworld.org\n");
+		for(i = 26; i < 32; i++)
+		{
+			printf_line(i, "");
+		}
+		printf_line(32, "===================================================================");
+		}
 	}
-}
 
 // ---------------------------------------------------------------------------
 // filer_scene_remote
@@ -843,6 +927,7 @@ static void play_scene(int buttons)
 		play_draw();
 	} else if(buttons & PSP_CTRL_START) {
 	
+	/*	//discarded, sorry but buttons are over :P
 		srand(time(NULL));
 		filer_scene_select = rand() % current_dirents_count-1;
 			psf_stop();
@@ -854,12 +939,21 @@ static void play_scene(int buttons)
 				current_scene = SCENE_PLAY;
 				// 画面を更新する。
 				play_draw();
-			}
+				}*/
+		if(enable_timelimit == 0)
+			enable_timelimit = 1;
+		else
+			enable_timelimit = 0;
+		play_draw();
 
-	} else if(buttons & PSP_CTRL_SQUARE)
-		//printf_line(0,"r:%d", scePowerGetCpuClockFrequencyInt());
-		printf_line(0,"cpu:%d bus:%d", scePowerGetCpuClockFrequencyInt(),scePowerGetBusClockFrequencyInt());
-	else if(buttons & PSP_CTRL_TRIANGLE) {
+			
+
+	} else if(buttons & PSP_CTRL_SQUARE){
+	
+		printf_line( 9, "cpu       : %d", scePowerGetCpuClockFrequencyInt());
+		printf_line(10, "bus       : %d", scePowerGetBusClockFrequencyInt());
+
+	} else if(buttons & PSP_CTRL_TRIANGLE) {
 		// リバーブの有効 / 無効を切り替える。
 		enable_reverb ^= 1;
 		// 画面を更新する。
@@ -884,9 +978,9 @@ static void play_scene(int buttons)
 		else
 		{
 		filer_scene_select--;
-		if(filer_scene_select < 2)
+		if(filer_scene_select <0 || FIO_S_ISREG(current_dirents[filer_scene_select].d_stat.st_mode) != 1)//filer_scene_select < 2)
 		{
-			filer_scene_select = 2;
+			filer_scene_select++;
 		}
 		else
 		{
@@ -1094,9 +1188,9 @@ static void play_scene_remote(u32 buttons)
 		else
 		{
 			filer_scene_select--;
-		if(filer_scene_select < 2)
+		if(filer_scene_select <0 || FIO_S_ISREG(current_dirents[filer_scene_select].d_stat.st_mode) != 1)//filer_scene_select < 2)
 		{
-			filer_scene_select = 2;
+			filer_scene_select++;
 		}
 		else
 		{
@@ -1306,8 +1400,35 @@ int main(int argc, char *argv[])
 					}
 				}
 			}
-			printf_line(31, "%3d:%2d:%2d",hours,minutes,seconds);
+			printf_line(30, "%3d:%2d:%2d",hours,minutes,seconds);
+			if(enable_fade == 0 && enable_timelimit == 1 && hours >= hourstot && minutes >= minutestot && seconds >= secondstot)
+			{
+				play_scene(PSP_CTRL_RTRIGGER);
+			}
+			//fade still dont' work :(
+			/*else if(enable_fade == 1 && enable_timelimit == 1 && hours >= hourstot && minutes >= minutestot && seconds >= secondstot)
+			{
 
+				if(into_fade == 1)
+				{
+							sceKernelDelayThread(300000);
+
+					sceRtcGetCurrentTick(&fade_ticks);
+					if(fade_ticks-fade_start_ticks >= fade_res)
+					{
+									play_scene(PSP_CTRL_RTRIGGER);
+					}
+					//sceAudioChangeChannelVolume(audio_handle, (PSP_AUDIO_VOLUME_MAX/fade_res)*(fade_ticks-fade_start_ticks), (PSP_AUDIO_VOLUME_MAX/fade_res)*(fade_ticks-fade_start_ticks));
+					sceAudioChangeChannelVolume(audio_handle, PSP_AUDIO_VOLUME_MAX/20, PSP_AUDIO_VOLUME_MAX/20);
+				}
+				else if(into_fade == 0) //first time here eh? :D
+				{
+					sceRtcGetCurrentTick(&fade_start_ticks);
+					fade_res = (psf_info->fade/10)*(sceRtcGetTickResolution()/100);//fade total ticks duration
+					into_fade = 1;
+				}
+			}*/
+		//	else
 			play_scene(ctrl_data.Buttons);
 			//if (sceHprmIsRemoteExist > 0)
 			//{

@@ -11,7 +11,7 @@ OBJS += zlib/adler32.o zlib/compress.o zlib/crc32.o zlib/gzio.o \
 OBJS += sexypsf.o
 
 INCDIR = .. zlib
-CFLAGS = -O2 -G0 -Wall -D__PSP__ -DPSS_STYLE=1 -finline-functions -ffast-math
+CFLAGS = -O2 -G0 -Wall -DBUILD20 -D__PSP__ -DPSS_STYLE=1 -finline-functions -ffast-math
 CXXFLAGS = $(CFLAGS) -fno-exceptions -fno-rtti
 ASFLAGS = $(CFLAGS)
 
