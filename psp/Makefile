@@ -1,0 +1,28 @@
+TARGET = sexypsf
+# core
+OBJS  = ../PsxBios.o ../PsxCounters.o ../PsxDma.o ../Spu.o ../PsxHw.o \
+        ../PsxMem.o ../Misc.o ../R3000A.o ../PsxInterpreter.o ../PsxHLE.o \
+        ../spu/spu.o
+# zlib
+OBJS += zlib/adler32.o zlib/compress.o zlib/crc32.o zlib/gzio.o \
+        zlib/uncompr.o zlib/deflate.o zlib/trees.o zlib/zutil.o \
+        zlib/inflate.o zlib/infback.o zlib/inftrees.o zlib/inffast.o
+# main
+OBJS += sexypsf.o
+
+INCDIR = .. zlib
+CFLAGS = -O2 -G0 -Wall -D__PSP__ -DPSS_STYLE=1 -finline-functions -ffast-math
+CXXFLAGS = $(CFLAGS) -fno-exceptions -fno-rtti
+ASFLAGS = $(CFLAGS)
+
+LIBDIR =
+LDFLAGS =
+LIBS = -lpsprtc -lpsppower -lpspaudio -lpsphprm
+
+EXTRA_TARGETS = EBOOT.PBP
+PSP_EBOOT_TITLE = sexypsf v.1.1c
+PSP_EBOOT_ICON = ./graphics/icon.png
+PSP_EBOOT_PIC1 = ./graphics/background.png
+
+PSPSDK=$(shell psp-config --pspsdk-path)
+include $(PSPSDK)/lib/build.mak
